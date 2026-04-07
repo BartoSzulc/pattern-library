@@ -88,6 +88,16 @@ Każda sekcja to katalog z **dokładnie czterema plikami** o stałych nazwach:
 
 **Kluczowa decyzja architektoniczna (odkryta przy pre-discovery Pencil MCP):** Wzorce nie są zapisywane jako standalone pliki `.pen`. Pencil MCP nie wspiera tworzenia nowego `.pen` pod dowolną ścieżką (`batch_design` operuje na aktywnym dokumencie, `open_document` tylko otwiera istniejące pliki). Zamiast tego wzorzec jest **JSON-serializowanym snapshot'em drzewa węzłów**, który można zrekonstruować w dowolnym dokumencie docelowym przez sekwencję operacji `batch_design I(...)`. `design.json` jest self-contained i portable.
 
+**Trzy warianty wzorców (v1.2):**
+
+1. **Variant 1 — Pencil-sourced (standardowy, 4 pliki):** `design.json` z drzewem węzłów, `preview.png` z `export_nodes`, jeden `implementation.<ext>`, `README.md`. Tak jak opisane powyżej.
+
+2. **Variant 2 — Code-only (3 pliki):** Wzorce z istniejącego kodu bez oddzielnego Pencil designu (np. z istniejących projektów w Laragon). `design.json` zawiera sentinel object `{"_source_type":"code-only","_preview_status":"pending","nodes":[]}` zamiast drzewa węzłów. Brak `preview.png` — backfill później przez dev-browser MCP screenshot lub jeśli powstanie Pencil design. README ma pole `preview_status: pending` w frontmatter.
+
+3. **Variant 3 — Multi-file (4+ plików):** Wzorce interaktywne (FAQ, slidery, mapy, menu mobilne, dropdowny) które wymagają dodatkowych plików JS/CSS obok markupu. Może być Pencil-sourced lub code-only. Layout: **flat** (`implementation.blade.php` + `implementation.js` w jednym folderze) jeśli ≤2 pliki kodu, **nested** (`implementation/` subdir z `view.<ext>` + `script.js` + `style.scss` + ewentualne dep-*) jeśli ≥3 pliki kodu. Skill w Kroku 5b automatycznie przeszukuje `resources/js/` i `resources/css/` projektu źródłowego pod kątem powiązanych plików i pyta użytkownika co dołączyć.
+
+Wszystkie trzy warianty współistnieją w tej samej bibliotece — są rozróżnialne przez frontmatter `source_type` w README.md i obecność/brak `preview.png`. Bramka 2 wyszukiwania (wizualny podgląd) jest no-op dla Variant 2/3 bez preview — wtedy Claude od razu przechodzi do Bramki 3 (przegląd kodu).
+
 Brak któregokolwiek z tych plików = wzorzec jest niekompletny i nie pojawia się w wyszukiwaniu. Atomowość zapisu (patrz 5.2) gwarantuje, że nigdy nie powstaje pół-wzorzec.
 
 ### 4.4 Trzybramkowy pipeline wyszukiwania wzorca
