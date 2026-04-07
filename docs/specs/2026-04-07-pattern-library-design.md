@@ -60,7 +60,7 @@ patterns/
 ├── sections/                 ← reużywalne bloki (organizmy w nomenklaturze Atomic Design)
 │   ├── navigation/
 │   │   ├── top-bar-simple/
-│   │   │   ├── design.pen
+│   │   │   ├── design.json
 │   │   │   ├── preview.png
 │   │   │   ├── implementation.tsx
 │   │   │   └── README.md
@@ -81,10 +81,12 @@ Każda sekcja to katalog z **dokładnie czterema plikami** o stałych nazwach:
 
 | Plik | Zawartość | Generowany przez |
 |---|---|---|
-| `design.pen` | Sklonowany Frame (subtree węzłów) z oryginalnego pliku Pencila | `batch_design` operacja `Copy` do nowego `.pen` |
-| `preview.png` | Eksport wizualny, stała szerokość 800px | `mcp__pencil__export_nodes` |
+| `design.json` | JSON-serializowane drzewo węzłów wzorca (wynik `batch_get` z pełną głębokością) | `batch_get(filePath=source, nodeIds=[source_id], readDepth=999, resolveInstances=true)` + `Write` jako JSON |
+| `preview.png` | Eksport wizualny wzorca, standardowy scale 2x | `mcp__pencil__export_nodes` + `mv` z `{node_id}.png` do `preview.png` |
 | `implementation.tsx` | Surowy kod React Native z oryginalnymi importami + nagłówek-komentarz | `Read` źródła + `Write` z doklejonym nagłówkiem |
-| `README.md` | Frontmatter (metadane) + opis "kiedy używać / kiedy nie" + punkty adaptacji | Claude generuje draft, użytkownik akceptuje |
+| `README.md` | Frontmatter (metadane, w tym `source_node_id`) + opis "kiedy używać / kiedy nie" + punkty adaptacji | Claude generuje draft, użytkownik akceptuje |
+
+**Kluczowa decyzja architektoniczna (odkryta przy pre-discovery Pencil MCP):** Wzorce nie są zapisywane jako standalone pliki `.pen`. Pencil MCP nie wspiera tworzenia nowego `.pen` pod dowolną ścieżką (`batch_design` operuje na aktywnym dokumencie, `open_document` tylko otwiera istniejące pliki). Zamiast tego wzorzec jest **JSON-serializowanym snapshot'em drzewa węzłów**, który można zrekonstruować w dowolnym dokumencie docelowym przez sekwencję operacji `batch_design I(...)`. `design.json` jest self-contained i portable.
 
 Brak któregokolwiek z tych plików = wzorzec jest niekompletny i nie pojawia się w wyszukiwaniu. Atomowość zapisu (patrz 5.2) gwarantuje, że nigdy nie powstaje pół-wzorzec.
 
@@ -128,10 +130,13 @@ Zadanie: "zrób ekran ustawień z grupami opcji"
   fit     ▼
 ┌─────────────────────────────────────────────┐
 │ GENEROWANIE                                 │
-│ 1. open_document("<design.pen wzorca>")     │
-│ 2. batch_get → ID root node wzorca          │
-│ 3. open_document(docelowy .pen projektu)    │
-│ 4. batch_design: C("<root_id>", ...)        │
+│ 1. Read design.json (drzewo węzłów wzorca)  │
+│ 2. Upewnij się, że docelowy .pen jest       │
+│    aktywny w edytorze (get_editor_state)    │
+│ 3. Zdeserializuj JSON → sekwencja operacji  │
+│    batch_design I(...) w kolejności od      │
+│    rodzica do dzieci (≤25 ops na call)      │
+│ 4. Wykonaj batch_design na aktywnym .pen    │
 │ 5. Adaptacja implementation.tsx do bieżącego│
 │    projektu (typy, importy, punkty z header)│
 │ Koszt: największy — właściwe użycie wzorca  │
@@ -214,19 +219,19 @@ Krok 2 — Utwórz strukturę folderu
   • mkdir patterns/<kategoria>/<nazwa>/
   • Weryfikacja, że nazwa nie koliduje z istniejącym wzorcem
 
-Krok 3 — Zapisz design.pen
+Krok 3 — Zapisz design.json (JSON-serializowane drzewo węzłów)
   • W aktywnym edytorze jest źródłowy .pen z zaznaczonym węzłem
-  • open_document('new') → pusty dokument docelowy pod ścieżką
-    patterns/<kategoria>/<nazwa>/design.pen
-  • batch_design: C("<source_node_id>", "<new_doc_root>", {})
-    → klon subtree trafia do nowego .pen
-  • Zapis dokumentu na dysk odbywa się przez Pencil MCP jako efekt
-    open_document(path) z podaną ścieżką docelową (Pencil utrzymuje
-    persystencję, skill nie manipuluje .pen przez Write)
+  • batch_get(filePath=<SOURCE_PEN>, nodeIds=[<SOURCE_NODE_ID>],
+             readDepth=999, resolveInstances=true)
+    → pełne drzewo wzorca jako obiekt JSON
+  • Write patterns/<kategoria>/<nazwa>/design.json z wynikiem batch_get
 
 Krok 4 — Wyeksportuj preview.png
-  • mcp__pencil__export_nodes z design.pen, root, szerokość 800px
-  • Zapis do patterns/<kategoria>/<nazwa>/preview.png
+  • export_nodes(filePath=<SOURCE_PEN>, outputDir=<katalog wzorca>,
+                 nodeIds=[<SOURCE_NODE_ID>], format="png", scale=2)
+    → tworzy <SOURCE_NODE_ID>.png w katalogu wzorca
+  • mv <SOURCE_NODE_ID>.png → preview.png (export_nodes nie pozwala
+    wybrać nazwy pliku, więc rename jest obowiązkowy)
 
 Krok 5 — Skopiuj implementation.tsx
   • Read oryginalnego pliku .tsx
@@ -438,7 +443,7 @@ Claude:
              → punkty adaptacji: L12 zmienić typ Task → Book, L24 zmienić filtry
   [Generowanie]
              → open_document bieżącego .pen
-             → batch_design: C("design.pen/TaskListScreen/root", "current_doc_root", {})
+             → Read design.json → transform to batch_design I() operations → insert into active .pen
              → adaptacja kodu: Task → Book, filtry author/genre, reszta bez zmian
 Claude: "Użyłem wzorca task-list-with-filters. Zmieniłem 3 rzeczy wskazane w nagłówku.
          Design skopiowany, kod gotowy — sprawdź adaptację typów Book."
@@ -462,16 +467,20 @@ Claude: "Użyłem wzorca task-list-with-filters. Zmieniłem 3 rzeczy wskazane w 
 ### 9.1 Narzędzia Pencil MCP używane przez skill
 
 **Zapis wzorca (save-pattern):**
-- `get_editor_state()` — odczyt aktywnego `.pen` i ID zaznaczonego węzła źródłowego
-- `open_document('new')` — utworzenie docelowego `.pen` pod ścieżką `patterns/.../design.pen`
-- `batch_design(C(...))` — kopia subtree węzła ze źródłowego do docelowego dokumentu
-- `export_nodes()` — eksport do `preview.png`
+- `get_editor_state()` — odczyt aktywnego `.pen` (źródłowego) i ID zaznaczonego węzła
+- `batch_get(filePath, nodeIds, readDepth, resolveInstances)` — odczyt pełnego drzewa węzła źródłowego jako JSON
+- `export_nodes(filePath, outputDir, nodeIds, format, scale)` — eksport wzorca do PNG. **Ważne:** plik wyjściowy ma nazwę `{nodeId}.{ext}` — skill musi przemianować na `preview.png` po eksporcie
+- `Write` (nie Pencil MCP) — zapis zserializowanego JSON z `batch_get` do `design.json`
 
 **Użycie wzorca (pipeline wyszukiwania):**
-- `open_document(<design.pen wzorca>)` — otwarcie zapisanego wzorca jako źródła kopii
-- `batch_get(patterns, nodeIds)` — uzyskanie ID root node'a wzorca, bez tego nie ma czego przekazać do `batch_design`
-- `open_document(<docelowy .pen projektu>)` — przełączenie na dokument, do którego kopiujemy
-- `batch_design(C(...))` — klonowanie subtree wzorca do docelowego dokumentu projektu
+- `Read design.json` — odczyt zserializowanego drzewa węzłów
+- `get_editor_state()` — potwierdzenie, że docelowy `.pen` jest aktywnym edytorem (jeśli nie, użytkownik musi go otworzyć ręcznie)
+- `batch_design(filePath, operations)` — seria operacji `I(parent, {...node_data...})` rekonstruujących drzewo z JSON w aktywnym dokumencie; potrzeba może być rozbita na wiele wywołań z ≤25 ops każde
+
+**Kluczowe ograniczenia Pencil MCP (odkryte przy pre-discovery):**
+- `batch_design` z parametrem `filePath` wskazującym na nieistniejący plik **nie tworzy pliku** — operacje wykonują się na aktywnym edytorze. Dlatego nie używamy `batch_design` do utworzenia standalone `design.pen`.
+- `open_document('new')` tworzy pusty dokument w edytorze, ale nie ma mechanizmu zapisania go pod wybraną ścieżką przez MCP.
+- `export_nodes` nie pozwala wybrać nazwy pliku wyjściowego — używa ID węzła jako nazwy.
 
 ### 9.2 Narzędzia standardowe
 

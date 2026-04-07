@@ -216,7 +216,7 @@ rozpoznać i ponownie użyć istniejący wzorzec zamiast tworzyć od zera.
 ## Struktura
 - `sections/` — reużywalne bloki UI pogrupowane semantycznie (navigation,
   hero, content, forms, footer, empty-states). Każdy podkatalog to jedna sekcja
-  z dokładnie czterema plikami: `design.pen`, `preview.png`, `implementation.tsx`,
+  z dokładnie czterema plikami: `design.json`, `preview.png`, `implementation.tsx`,
   `README.md`.
 - `compositions/` — przepisy składające wiele sekcji w gotowe ekrany. W v1
   PUSTY — tworzymy kompozycję dopiero gdy ten sam zestaw 3+ sekcji powtarza
@@ -245,10 +245,14 @@ od zera. Przy projektowaniu od zera rozważ, czy wynik warto zapisać jako
 nowy wzorzec (patrz niżej).
 
 ### Przy użyciu wzorca (kopiowanie do bieżącego projektu)
-1. `open_document(<ścieżka design.pen wzorca>)` — otwarcie wzorca jako źródła
-2. `batch_get` — uzyskanie ID root node'a wzorca
-3. `open_document(<ścieżka docelowego .pen projektu>)` — przełączenie na cel
-4. `batch_design(C("<root_id>", "<target_parent>", {}))` — klon subtree do celu
+1. `Read <ścieżka design.json wzorca>` — wczytaj zserializowane drzewo węzłów
+2. Upewnij się, że docelowy `.pen` projektu jest aktywnym edytorem
+   (`get_editor_state` pokaże który dokument jest aktywny; jeśli nie
+   ten, użytkownik musi go otworzyć ręcznie w Pencilu)
+3. Zdeserializuj JSON i przekształć na sekwencję operacji
+   `batch_design I(...)` w kolejności od rodzica do dzieci, maks 25 ops per call
+4. Wywołaj `batch_design(filePath=<aktywny_pen>, operations=...)` raz
+   lub wiele razy, aż całe drzewo zostanie wstawione
 5. Adaptacja `implementation.tsx` w kodzie projektu z uwzględnieniem
    punktów adaptacji z nagłówka-komentarza
 
@@ -551,7 +555,7 @@ Szablon do skopiowania i wypełnienia:
 # Skill: save-pattern
 
 Atomowo zapisuje wzorzec (sekcję UI) do biblioteki `C:/Users/getrk/patterns/`.
-Jeden wzorzec = katalog z czterema plikami: `design.pen`, `preview.png`,
+Jeden wzorzec = katalog z czterema plikami: `design.json`, `preview.png`,
 `implementation.tsx`, `README.md`. Aktualizuje też `INDEX.md`. Cały zapis
 jest atomowy — albo powstają wszystkie pliki i wpis w indeksie, albo żaden.
 
@@ -650,67 +654,72 @@ test -d "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>" && echo "OK" || e
 Jeśli `FAIL` — **abort** (nie ma jeszcze czego rollbackować, ale coś jest
 zasadniczo nie tak z uprawnieniami lub ścieżką).
 
-### Krok 3: Zapisz design.pen
+### Krok 3: Zapisz design.json (JSON snapshot drzewa węzłów)
 
-**Kształty wywołań Pencil MCP użyte w tym kroku pochodzą z pre-discovery
-wykonanego przed napisaniem tego skill'a** (patrz notatki w
-`docs/plans/pencil-mcp-notes.md` — sekcje "batch_design Copy",
-"open_document", "persistence"). Jeśli piszesz ten skill pierwszy raz,
-wypełnij `<<PENCIL_SHAPE:...>>` markery konkretnymi kształtami z notatek
-**przed** zapisaniem skill'a.
+**Uwaga architektoniczna:** Pencil MCP nie wspiera tworzenia standalone
+`.pen` plików pod dowolną ścieżką (`batch_design` operuje na aktywnym
+dokumencie; `open_document` tylko otwiera istniejące pliki). Dlatego
+wzorzec zapisuje się jako **JSON snapshot drzewa węzłów** — pełny wynik
+`batch_get` zapisany jako `design.json`. Przy użyciu wzorca JSON jest
+deserializowany do sekwencji `batch_design I(...)` wstawiającej węzły
+do docelowego dokumentu.
 
-1. Zapamiętaj źródło (jeszcze z aktywnego dokumentu sprzed skill'a):
-   - `SOURCE_NODE_ID` — ID zaznaczonego węzła z `get_editor_state().selection`
-   - `SOURCE_PEN_PATH` — ścieżka aktualnego `.pen` z `get_editor_state`
+Szczegóły kształtów wywołań: `docs/plans/pencil-mcp-notes.md` (sekcje
+"batch_get" i "batch_design").
 
-2. Utwórz nowy dokument docelowy pod docelową ścieżką. **Sposób
-   utworzenia zależy od tego, jak Pencil obsługuje `open_document` z
-   nową ścieżką** (patrz pencil-mcp-notes.md → "open_document, path
-   does not exist"):
+1. Z `get_editor_state()` odczytaj:
+   - `SOURCE_PEN_PATH` — ścieżkę aktywnego `.pen`
+   - `SOURCE_NODE_ID` — ID zaznaczonego węzła
+   Jeśli nie ma zaznaczenia, jesteś poza pre-flight checks — to jest
+   bug, abort z rollbackiem.
+
+2. Odczytaj pełne drzewo węzła:
    ```
-   <<PENCIL_SHAPE: create new .pen at
-     C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/design.pen>>
-   ```
-
-3. Odczytaj ID root node'a nowego dokumentu przez
-   `mcp__pencil__get_editor_state()` → `TARGET_ROOT_ID`.
-
-4. Skopiuj subtree ze źródła do celu. **Sposób cross-document copy
-   zależy od tego, co wspiera `batch_design`** (patrz pencil-mcp-notes.md
-   → "batch_design Copy cross-document"):
-   ```
-   <<PENCIL_SHAPE: copy SOURCE_NODE_ID (from SOURCE_PEN_PATH)
-     into TARGET_ROOT_ID of target document>>
+   mcp__pencil__batch_get({
+     filePath: "<SOURCE_PEN_PATH>",
+     nodeIds: ["<SOURCE_NODE_ID>"],
+     readDepth: 999,
+     resolveInstances: true,
+     includePathGeometry: true
+   })
    ```
 
-5. Zapisz docelowy dokument na dysk. **Sposób zapisu zależy od
-   mechanizmu persystencji Pencila** (patrz pencil-mcp-notes.md →
-   "persistence"):
+3. Zserializuj wynik jako pretty-printed JSON i zapisz:
    ```
-   <<PENCIL_SHAPE: persist current editor document to disk>>
+   Write "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/design.json"
    ```
+   Zawartość: stringify wyniku `batch_get` z indentacją 2 spacji, żeby
+   był czytelny ludzkim okiem (do debugowania).
 
-6. Zweryfikuj, że plik istnieje fizycznie:
+4. Zweryfikuj, że plik istnieje i ma sensowny rozmiar:
    ```bash
-   test -f "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/design.pen" && wc -c "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/design.pen" || echo "MISSING"
+   test -f "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/design.json" && wc -c "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/design.json" || echo "MISSING"
    ```
-   Jeśli `MISSING` lub rozmiar to 0 bajtów — **ROLLBACK**.
+   Jeśli `MISSING` lub rozmiar < 100 bajtów (pusty node tree) — **ROLLBACK**.
 
 ### Krok 4: Wyeksportuj preview.png
 
-1. Upewnij się, że aktywnym dokumentem jest świeżo zapisany wzorzec
-   (jeśli nie, otwórz go):
-   ```
-   <<PENCIL_SHAPE: ensure document is
-     C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/design.pen>>
-   ```
+Eksport bierze węzeł prosto ze źródłowego `.pen` (aktywnego dokumentu), a
+nie z `design.json`. Ze schematu `export_nodes` wiemy, że plik wyjściowy
+nazywa się `<nodeId>.<ext>` w `outputDir` — skill musi go przemianować
+na `preview.png`.
 
-2. Wyeksportuj root node do PNG o szerokości 800px. **Dokładne nazwy
-   argumentów i kolejność pochodzą z pre-discovery** (patrz
-   pencil-mcp-notes.md → "export_nodes"):
+1. Wyeksportuj węzeł do katalogu wzorca:
    ```
-   <<PENCIL_SHAPE: export TARGET_ROOT_ID as PNG, width=800,
-     to C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/preview.png>>
+   mcp__pencil__export_nodes({
+     filePath: "<SOURCE_PEN_PATH>",
+     outputDir: "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>",
+     nodeIds: ["<SOURCE_NODE_ID>"],
+     format: "png",
+     scale: 2
+   })
+   ```
+   To tworzy `<SOURCE_NODE_ID>.png` w `outputDir`.
+
+2. Przemianuj plik na `preview.png`:
+   ```bash
+   mv "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/<SOURCE_NODE_ID>.png" \
+      "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>/preview.png"
    ```
 
 3. Zweryfikuj, że plik istnieje i jest realną grafiką:
@@ -872,7 +881,7 @@ nowy tag w TAGS.md jako jedna atomowa operacja.
 Poinformuj użytkownika zwięźle:
 ```
 Zapisano wzorzec sections/<kategoria>/<nazwa>/
-- design.pen (<rozmiar>)
+- design.json (<rozmiar>)
 - preview.png (<rozmiar>)
 - implementation.tsx (<liczba linii> linii, w tym 17 linii nagłówka)
 - README.md
@@ -896,7 +905,7 @@ zostało zapisane:
    - `Read TAGS.md`, `Edit` aby usunąć dodany wiersz
    - Zweryfikuj: `grep -c "<nowy_tag>" TAGS.md` powinno zwrócić `0`
 
-3. **Usuń katalog docelowy** (zawiera design.pen, preview.png,
+3. **Usuń katalog docelowy** (zawiera design.json, preview.png,
    implementation.tsx, README.md — to wszystko od Kroków 2-6):
    ```bash
    rm -rf "C:/Users/getrk/patterns/sections/<kategoria>/<nazwa>"
@@ -1018,7 +1027,7 @@ grep -E "^### Krok [1-7]: " "C:/Users/getrk/.claude/skills/save-pattern.md"
 Expected: dokładnie 7 dopasowań, w kolejności:
 - `### Krok 1: Zbierz i zwaliduj dane od użytkownika`
 - `### Krok 2: Utwórz katalog docelowy`
-- `### Krok 3: Zapisz design.pen`
+- `### Krok 3: Zapisz design.json`
 - `### Krok 4: Wyeksportuj preview.png`
 - `### Krok 5: Skopiuj implementation.tsx z nagłówkiem`
 - `### Krok 6: Wygeneruj i zapisz README.md`
@@ -1125,7 +1134,7 @@ Run:
 ```bash
 ls -la "C:/Users/getrk/patterns/sections/navigation/bottom-tab-5/"
 ```
-Expected: 4 pliki — `design.pen`, `preview.png`, `implementation.tsx`, `README.md`.
+Expected: 4 pliki — `design.json`, `preview.png`, `implementation.tsx`, `README.md`.
 
 - [ ] **Step 12.2: Sprawdź, że INDEX został zaktualizowany**
 
@@ -1200,7 +1209,7 @@ artefakt na dysku).
 
 Skill Krok 6 tworzy draft README i czeka na akceptację użytkownika, z
 maksymalnie 3 iteracjami. 3× odrzucenie draftu wymusza rollback po
-utworzeniu katalogu + `design.pen` + `preview.png` + `implementation.tsx`.
+utworzeniu katalogu + `design.json` + `preview.png` + `implementation.tsx`.
 To jedyny niezawodny sposób na sprowokowanie rollbacku w sesji
 interaktywnej bez modyfikacji skill'a.
 
